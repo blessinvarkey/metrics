@@ -1,14 +1,6 @@
-# backend/app/services/metrics.py
-
 import os
-import logging
-import json
 from datetime import datetime, timedelta
-
 from azure.cosmos import CosmosClient
-from azure.cosmos.exceptions import CosmosHttpResponseError
-
-# use the same constants you already have in utilities/constants.py
 from utilities.constants import (
     AZURE_COSMOSDB_ENDPOINT,
     AZURE_COSMOSDB_ACCOUNT_KEY,
@@ -16,86 +8,59 @@ from utilities.constants import (
     AZURE_COSMOSDB_CONVERSATIONS_CONTAINER,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-
-def get_conversations_container():
-    """
-    Initialize and return the Cosmos DB container for conversation logs.
-    """
+def fetch_weekly_metrics():
+    # instantiate Cosmos client
     client = CosmosClient(AZURE_COSMOSDB_ENDPOINT, AZURE_COSMOSDB_ACCOUNT_KEY)
     db = client.get_database_client(AZURE_COSMOSDB_DATABASE)
-    return db.get_container_client(AZURE_COSMOSDB_CONVERSATIONS_CONTAINER)
+    container = db.get_container_client(AZURE_COSMOSDB_CONVERSATIONS_CONTAINER)
 
-
-def fetch_weekly_logs(container, start: datetime, end: datetime):
-    """
-    Pull all conversation-log items in the given time window.
-    """
-    start_iso = start.isoformat()
-    end_iso = end.isoformat()
-    query = f"""
-      SELECT c.id, c.timestamp_query_asked, c.timestamp_query_executed, c.status, c.error
-      FROM c
-      WHERE c.timestamp_query_asked >= '{start_iso}'
-        AND c.timestamp_query_asked <  '{end_iso}'
-    """
-    logging.info("Querying Cosmos for logs between %s and %s", start_iso, end_iso)
-    try:
-        return list(container.query_items(query, enable_cross_partition_query=True))
-    except CosmosHttpResponseError as e:
-        logging.error("Failed to query Cosmos DB: %s", e)
-        return []
-
-
-def compute_metrics(items):
-    """
-    Given a list of log dicts, compute summary metrics.
-    """
-    total = len(items)
-    successes = sum(1 for i in items if i.get("status") == "success")
-    failures = total - successes
-
-    # compute avg response time in seconds
-    durations = []
-    for i in items:
-        t0 = i.get("timestamp_query_asked")
-        t1 = i.get("timestamp_query_executed")
-        if t0 and t1:
-            dt0 = datetime.fromisoformat(t0)
-            dt1 = datetime.fromisoformat(t1)
-            durations.append((dt1 - dt0).total_seconds())
-    avg_latency = sum(durations) / len(durations) if durations else None
-
-    error_messages = {}
-    for i in items:
-        err = i.get("error")
-        if err:
-            error_messages[err] = error_messages.get(err, 0) + 1
-
-    return {
-        "period_start": items[0].get("timestamp_query_asked") if items else None,
-        "period_end": items[-1].get("timestamp_query_asked") if items else None,
-        "total_requests": total,
-        "successful_requests": successes,
-        "failed_requests": failures,
-        "average_latency_seconds": avg_latency,
-        "errors_breakdown": error_messages,
-    }
-
-
-def main():
-    # define “last week”
+    # define time window
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
 
-    container = get_conversations_container()
-    logs = fetch_weekly_logs(container, start=week_ago, end=now)
-    metrics = compute_metrics(logs)
+    # parameterized query to avoid injection
+    query = """
+        SELECT c.status, c.timestamp_query_asked, c.timestamp_query_executed
+        FROM c
+        WHERE c.timestamp_query_asked >= @start
+    """
+    params = [{"name": "@start", "value": week_ago.isoformat() + "Z"}]
 
-    # pretty‐print JSON to stdout (or write to file, email, etc.)
-    print(json.dumps(metrics, indent=2))
+    items = list(container.query_items(
+        query=query,
+        parameters=params,
+        enable_cross_partition_query=True
+    ))
 
+    total = len(items)
+    successes = [i for i in items if i.get("status") == "success"]
+    failures  = [i for i in items if i.get("status") != "success"]
+
+    # compute average latency (in seconds)
+    latencies = []
+    for itm in successes:
+        try:
+            t_asked   = datetime.fromisoformat(itm["timestamp_query_asked"].rstrip("Z"))
+            t_executed= datetime.fromisoformat(itm["timestamp_query_executed"].rstrip("Z"))
+            latencies.append((t_executed - t_asked).total_seconds())
+        except Exception:
+            continue
+
+    avg_latency = sum(latencies) / len(latencies) if latencies else None
+
+    return {
+        "period_start": week_ago.isoformat() + "Z",
+        "period_end"  : now.isoformat() + "Z",
+        "total_queries"     : total,
+        "successful_queries": len(successes),
+        "failed_queries"    : len(failures),
+        "success_rate"      : round(len(successes)/total*100, 1) if total else 0,
+        "avg_latency_sec"   : round(avg_latency, 2) if avg_latency is not None else None
+    }
 
 if __name__ == "__main__":
-    main()
+    metrics = fetch_weekly_metrics()
+    print("\n===== Weekly Usage Metrics =====")
+    for k, v in metrics.items():
+        print(f"{k:20s}: {v}")
+    print("================================\n")
