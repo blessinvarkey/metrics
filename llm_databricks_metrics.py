@@ -1,32 +1,27 @@
-# app/services/metrics.py
+# backend/app/services/metrics.py
 
-import json
 import datetime
 import requests
 import numpy as np
 from azure.cosmos import CosmosClient
-from utilities.constants import (
-    AZURE_COSMOSDB_ENDPOINT,
-    AZURE_COSMOSDB_ACCOUNT_KEY,
-    AZURE_COSMOSDB_DATABASE,
-    AZURE_COSMOSDB_CONVERSATIONS_CONTAINER,
-    API_HEALTH_URL,
-)
+
+import utilities.constants as constants
+
 
 class MetricsService:
     def __init__(self):
         # Initialize Cosmos DB client & container
         self.client = CosmosClient(
-            AZURE_COSMOSDB_ENDPOINT,
-            AZURE_COSMOSDB_ACCOUNT_KEY
+            constants.AZURE_COSMOSDB_ENDPOINT,
+            constants.AZURE_COSMOSDB_ACCOUNT_KEY
         )
         self.container = (
             self.client
-                .get_database_client(AZURE_COSMOSDB_DATABASE)
-                .get_container_client(AZURE_COSMOSDB_CONVERSATIONS_CONTAINER)
+                .get_database_client(constants.AZURE_COSMOSDB_DATABASE)
+                .get_container_client(constants.AZURE_COSMOSDB_CONVERSATIONS_CONTAINER)
         )
         # Health-check URL for uptime
-        self.health_url = API_HEALTH_URL
+        self.health_url = constants.API_HEALTH_URL
 
     def _query_value(self, query: str, params: list) -> any:
         results = list(self.container.query_items(
@@ -37,8 +32,10 @@ class MetricsService:
         return results[0] if results else None
 
     def get_usage(self, start: datetime.datetime, end: datetime.datetime) -> dict:
-        p = [{"name":"@start","value":start.isoformat()},
-             {"name":"@end","value":end.isoformat()}]
+        p = [
+            {"name":"@start","value":start.isoformat()},
+            {"name":"@end",  "value":end.isoformat()}
+        ]
         total_q = self._query_value(
             "SELECT VALUE COUNT(1) FROM c WHERE c.timestamp_query_asked >= @start AND c.timestamp_query_asked <= @end",
             p
@@ -50,8 +47,10 @@ class MetricsService:
         return {"total_queries": int(total_q), "active_users": int(unique_u)}
 
     def get_performance(self, start: datetime.datetime, end: datetime.datetime) -> dict:
-        p = [{"name":"@start","value":start.isoformat()},
-             {"name":"@end","value":end.isoformat()}]
+        p = [
+            {"name":"@start","value":start.isoformat()},
+            {"name":"@end",  "value":end.isoformat()}
+        ]
         items = list(self.container.query_items(
             """
             SELECT c.timestamp_query_asked, c.timestamp_query_executed
@@ -75,8 +74,10 @@ class MetricsService:
         usage = self.get_usage(start, end)["total_queries"]
         if usage == 0:
             return 0.0
-        p = [{"name":"@start","value":start.isoformat()},
-             {"name":"@end","value":end.isoformat()}]
+        p = [
+            {"name":"@start","value":start.isoformat()},
+            {"name":"@end",  "value":end.isoformat()}
+        ]
         err = self._query_value(
             """
             SELECT VALUE COUNT(1)
@@ -89,8 +90,10 @@ class MetricsService:
         return float(err) / usage
 
     def get_confidence(self, start: datetime.datetime, end: datetime.datetime) -> float:
-        p = [{"name":"@start","value":start.isoformat()},
-             {"name":"@end","value":end.isoformat()}]
+        p = [
+            {"name":"@start","value":start.isoformat()},
+            {"name":"@end",  "value":end.isoformat()}
+        ]
         items = list(self.container.query_items(
             """
             SELECT VALUE c.refiner_confidence_score
@@ -114,12 +117,12 @@ class MetricsService:
         end   = datetime.datetime.utcnow()
         start = end - datetime.timedelta(days=period_days)
         usage   = self.get_usage(start, end)
-        performance = self.get_performance(start, end)
+        perf    = self.get_performance(start, end)
         return {
-            "period_start": start.isoformat(),
-            "period_end":   end.isoformat(),
+            "period_start":   start.isoformat(),
+            "period_end":     end.isoformat(),
             **usage,
-            **performance,
+            **perf,
             "error_rate":     self.get_error_rate(start, end),
             "avg_confidence": self.get_confidence(start, end),
             "uptime_pct":     self.get_uptime(),
