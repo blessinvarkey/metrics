@@ -31,9 +31,11 @@ def fetch_weekly_items():
       SELECT
         c.id,
         c.userId,
+        c.user_context,
         c.user_question,
         c.generated_sql_query,
         c.database_response,
+        c.error,
         c.status,
         c.timestamp_query_asked,
         c.timestamp_query_generated,
@@ -48,6 +50,7 @@ def fetch_weekly_items():
         parameters=params,
         enable_cross_partition_query=True
     ))
+
 
 def compute_metrics(items):
     """
@@ -88,6 +91,7 @@ def compute_metrics(items):
         'user_counts': user_counts,
     }
 
+
 def generate_report():
     """
     Fetches data, computes metrics, prints to console, and writes Excel.
@@ -113,16 +117,44 @@ def generate_report():
         print(f"{user:30s} : {count}")
     print()
 
-    # Full query details
+    # Full query details with user_context, latencies, error
     print("===== All Query Details =====")
+    detailed_rows = []
     for d in items:
-        print(f"User      : {d.get('userId')}")
-        print(f"Question  : {d.get('user_question')}")
-        print(f"SQL       : {d.get('generated_sql_query')}")
-        print(f"Response  : {json.dumps(d.get('database_response'), ensure_ascii=False)}")
-        print("-" * 50)
+        # calculate latencies per record
+        try:
+            t0 = datetime.fromisoformat(d['timestamp_query_asked'])
+            t1 = datetime.fromisoformat(d['timestamp_query_generated'])
+            t2 = datetime.fromisoformat(d['timestamp_query_executed'])
+            llm_ms = round((t1 - t0).total_seconds() * 1000, 2)
+            db_ms  = round((t2 - t1).total_seconds() * 1000, 2)
+        except Exception:
+            llm_ms = db_ms = None
 
-    # Prepare Excel sheets
+        detailed_rows.append({
+            'UserId': d.get('userId'),
+            'UserContext': d.get('user_context'),
+            'UserQuestion': d.get('user_question'),
+            'GeneratedSQL': d.get('generated_sql_query'),
+            'LLM Latency (ms)': llm_ms,
+            'DB Latency (ms)': db_ms,
+            'DatabaseResponse': json.dumps(d.get('database_response'), ensure_ascii=False),
+            'Error': d.get('error'),
+            'Status': d.get('status'),
+        })
+
+        # print to console
+        print(f"UserId          : {d.get('userId')}")
+        print(f"UserContext     : {d.get('user_context')}")
+        print(f"Question        : {d.get('user_question')}")
+        print(f"GeneratedSQL    : {d.get('generated_sql_query')}")
+        print(f"LLM Latency (ms): {llm_ms}")
+        print(f"DB Latency (ms) : {db_ms}")
+        print(f"Status / Error  : {d.get('status')} / {d.get('error')}")
+        print(f"Response        : {json.dumps(d.get('database_response'), ensure_ascii=False)}")
+        print("-" * 60)
+
+    # Prepare DataFrames for Excel
     summary_df = pd.DataFrame([
         ("Date Range",          f"{(now - timedelta(days=7)).date()} → {now.date()}"),
         ("Total Queries",       metrics['total_queries']),
@@ -138,24 +170,17 @@ def generate_report():
         columns=["UserId", "Queries"]
     )
 
-    queries_df = pd.DataFrame([
-        {
-            "UserId": d.get('userId'),
-            "UserQuestion": d.get('user_question'),
-            "GeneratedSQL": d.get('generated_sql_query'),
-            "DatabaseResponse": json.dumps(d.get('database_response'), ensure_ascii=False)
-        }
-        for d in items
-    ])
+    details_df = pd.DataFrame(detailed_rows)
 
-    # Write Excel
+    # Write to Excel
     excel_path = "weekly_metrics_detailed.xlsx"
     with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         user_counts_df.to_excel(writer, sheet_name="UserCounts", index=False)
-        queries_df.to_excel(writer, sheet_name="AllQueries", index=False)
+        details_df.to_excel(writer, sheet_name="AllQueries", index=False)
 
     print(f"\nExcel report saved to: {excel_path}\n")
+
 
 if __name__ == "__main__":
     generate_report()
