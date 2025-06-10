@@ -1,0 +1,66 @@
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+from backend.app.services.metrics import fetch_weekly_items, compute_metrics
+
+# ─── MAIN APP ───────────────────────────────────────────────────────────────────
+st.title("📊 Project Dashboard & Exporter")
+
+# 1) Project selector
+project = st.selectbox(
+    "Choose a project", 
+    ["Conversational BI", "Internal ChatGPT", "Licencing Chatbot"]
+)
+
+# 2) If Conversational BI, show metrics via backend service
+if project == "Conversational BI":
+    # Fetch raw items and compute metrics
+    items = fetch_weekly_items()
+    metrics = compute_metrics(items)
+    if metrics['total_queries']:
+        # Display key metrics in columns
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Total Queries (7d)", metrics['total_queries'])
+        c2.metric("Successes", metrics['successful_queries'])
+        c3.metric("Failures", metrics['failed_queries'])
+        c4.metric("Success Rate (%)", f"{metrics['success_rate_pct']:.2f}")
+        c5.metric("Avg LLM Latency (ms)", f"{metrics['avg_llm_latency_ms']:.1f}")
+        c6.metric("Avg DB Latency (ms)", f"{metrics['avg_db_latency_ms']:.1f}")
+
+        # Optional: show per-user counts
+        st.markdown("**Queries per User:**")
+        user_counts_df = pd.DataFrame(
+            list(metrics['user_counts'].items()), columns=["UserId", "Queries"]
+        )
+        st.dataframe(user_counts_df)
+    else:
+        st.info("No conversation data found for the last 7 days.")
+
+# 3) Fetch and display raw documents for any project
+@st.cache_data(show_spinner=False)
+def fetch_docs_for(project_name):
+    # Use service or inline query; here we reuse fetch_weekly_items for CI and sample fetch for others
+    if project_name == "Conversational BI":
+        items = fetch_weekly_items()
+    else:
+        # Placeholder: replace with actual fetch for other projects
+        items = []
+    return pd.DataFrame(items)
+
+df = fetch_docs_for(project)
+st.markdown(f"### `{project}` — {len(df)} records")
+st.dataframe(df)
+
+# 4) Excel export
+ing = st.button("Generate Excel report")
+if ing:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=project.replace(" ", "_"))
+    buf.seek(0)
+    st.download_button(
+        "📥 Download Excel",
+        data=buf,
+        file_name=f"{project.replace(' ','_')}_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
