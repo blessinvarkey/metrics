@@ -7,12 +7,13 @@ import numpy as np
 import pandas as pd
 from azure.cosmos import CosmosClient
 
-from utilities.constants import (
-    AZURE_COSMOSDB_ENDPOINT,
-    AZURE_COSMOSDB_ACCOUNT_KEY,
-    AZURE_COSMOSDB_DATABASE,
-    AZURE_COSMOSDB_CONVERSATIONS_CONTAINER,
-)
+# from utilities.constants import (
+#     AZURE_COSMOSDB_ENDPOINT,
+#     AZURE_COSMOSDB_ACCOUNT_KEY,
+#     AZURE_COSMOSDB_DATABASE,
+#     AZURE_COSMOSDB_CONVERSATIONS_CONTAINER,
+# )
+# Set env variables instead
 
 def fetch_weekly_items():
     """
