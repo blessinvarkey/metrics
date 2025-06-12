@@ -4,26 +4,18 @@ import os
 import asyncio
 import pandas as pd
 
-# Determine script directory for locating default files
-SCRIPT_DIR = os.path.dirname(__file__)
-
-# Import the same entry-point your API uses
+# Import the full pipeline entry-point and context fetcher
 from api.queries import main as handle_query, fetch_context
 from models.entities import UserQuestionRequest
 
-# File paths (override via env)
-INPUT_PATH      = os.getenv(
-    "QUESTIONS_FILE",
-    os.path.join(SCRIPT_DIR, "questions.xlsx")
-)
-OUTPUT_PATH     = os.getenv(
-    "EVAL_OUTPUT_FILE",
-    os.path.join(SCRIPT_DIR, "eval_results.xlsx")
-)
-SHEET_NAME      = os.getenv("QUESTIONS_SHEET", None)
-QUESTION_COLUMN = os.getenv("QUESTION_COLUMN", None)
+# Hard-coded question for initial testing
+def get_test_questions():
+    # Replace this list with your own test cases as needed
+    return [
+        "Show me total sales by region for the last quarter."
+    ]
 
-async def _evaluate_batch(df: pd.DataFrame):
+async def _evaluate_batch(questions):
     """
     Call the full production pipeline (api.queries.main) for each question.
     """
@@ -32,7 +24,7 @@ async def _evaluate_batch(df: pd.DataFrame):
     # Minimal auth dict to satisfy Depends(Authorisation())
     dummy_auth = {"sub": "eval_user", "roles": ["evaluator"]}
 
-    for question in df["Question"]:
+    for question in questions:
         # 1) Fetch context for each question
         user_context = await fetch_context(question)
 
@@ -50,51 +42,25 @@ async def _evaluate_batch(df: pd.DataFrame):
         record["Question"] = question
         results.append(record)
 
+    # Return as DataFrame for writing or printing
     return pd.DataFrame(results)
 
 
 def main():
-    # 1) Load questions from Excel or CSV
-    if not os.path.exists(INPUT_PATH):
-        raise FileNotFoundError(f"Questions file not found: {INPUT_PATH}")
+    # Use hard-coded test questions rather than reading from a file
+    questions = get_test_questions()
 
-    # Read file
-    if INPUT_PATH.lower().endswith(".xlsx"):
-        df = pd.read_excel(INPUT_PATH, sheet_name=SHEET_NAME)
-    else:
-        df = pd.read_csv(INPUT_PATH)
+    # Run the async evaluation batch
+    df_out = asyncio.run(_evaluate_batch(questions))
 
-    # 2) Determine which column holds questions
-    cols = list(df.columns)
-    if QUESTION_COLUMN and QUESTION_COLUMN in cols:
-        qcol = QUESTION_COLUMN
-    elif "Question" in cols:
-        qcol = "Question"
-    elif "question" in cols:
-        qcol = "question"
-    elif len(cols) == 1:
-        qcol = cols[0]
-    else:
-        raise ValueError(
-            "Could not find question column. Set QUESTION_COLUMN or include 'Question' or 'question'. "
-            f"Available columns: {cols}"
-        )
+    # Write results out to console and to a CSV for now
+    print("===== Evaluation Results =====")
+    print(df_out.to_string(index=False))
 
-    # Normalize to 'Question'
-    if qcol != "Question":
-        df = df.rename(columns={qcol: "Question"})
-
-    # 3) Run the async evaluation batch
-    df_out = asyncio.run(_evaluate_batch(df))
-
-    # 4) Write results out to Excel or CSV
-    if OUTPUT_PATH.lower().endswith(".xlsx"):
-        with pd.ExcelWriter(OUTPUT_PATH, engine="openpyxl") as writer:
-            df_out.to_excel(writer, index=False, sheet_name="EvalResults")
-    else:
-        df_out.to_csv(OUTPUT_PATH, index=False)
-
-    print(f"✅ Wrote {len(df_out)} evaluation records to {OUTPUT_PATH}")
+    # Save to CSV in the working directory
+    output_file = os.getenv("EVAL_OUTPUT_FILE", "eval_results.csv")
+    df_out.to_csv(output_file, index=False)
+    print(f"✅ Wrote {len(df_out)} evaluation records to {output_file}")
 
 
 if __name__ == "__main__":
