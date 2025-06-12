@@ -4,14 +4,17 @@ import os
 import asyncio
 import pandas as pd
 
+# Allow locating the questions file relative to this script
+SCRIPT_DIR = os.path.dirname(__file__)
+
 # Import the same entry-point your API uses
 from api.queries import main as handle_query, fetch_context
 from models.entities import UserQuestionRequest
 
 # File paths (override via env)
-# questions.xlsx placed in the same services folder as this script
-INPUT_PATH  = os.getenv("QUESTIONS_FILE", "questions.xlsx")
-OUTPUT_PATH = os.getenv("EVAL_OUTPUT_FILE", "eval_results.xlsx")
+# Default files live alongside this script
+INPUT_PATH  = os.getenv("QUESTIONS_FILE", os.path.join(SCRIPT_DIR, "questions.xlsx"))
+OUTPUT_PATH = os.getenv("EVAL_OUTPUT_FILE", os.path.join(SCRIPT_DIR, "eval_results.xlsx"))
 SHEET_NAME  = os.getenv("QUESTIONS_SHEET", None)
 
 async def _evaluate_batch(df: pd.DataFrame):
