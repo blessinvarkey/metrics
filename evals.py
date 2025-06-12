@@ -4,7 +4,8 @@ import os
 import asyncio
 import pandas as pd
 
-# Allow locating the questions file relative to this script\ nSCRIPT_DIR = os.path.dirname(__file__)
+# Determine script directory for locating default files
+SCRIPT_DIR = os.path.dirname(__file__)
 
 # Import the same entry-point your API uses
 from api.queries import main as handle_query, fetch_context
