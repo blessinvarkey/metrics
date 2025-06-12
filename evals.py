@@ -26,7 +26,9 @@ async def _evaluate_batch(questions):
 
     for question in questions:
         # 1) Fetch context for each question
-        user_context = await fetch_context(question)
+        ctx = await fetch_context(question)
+        # Ensure user_context is a string
+        user_context = str(ctx)
 
         # 2) Build the request including required context
         req = UserQuestionRequest(
