@@ -12,10 +12,16 @@ from api.queries import main as handle_query, fetch_context
 from models.entities import UserQuestionRequest
 
 # File paths (override via env)
-# Default files live alongside this script
-INPUT_PATH  = os.getenv("QUESTIONS_FILE", os.path.join(SCRIPT_DIR, "questions.xlsx"))
-OUTPUT_PATH = os.getenv("EVAL_OUTPUT_FILE", os.path.join(SCRIPT_DIR, "eval_results.xlsx"))
-SHEET_NAME  = os.getenv("QUESTIONS_SHEET", None)
+INPUT_PATH      = os.getenv(
+    "QUESTIONS_FILE",
+    os.path.join(SCRIPT_DIR, "questions.xlsx")
+)
+OUTPUT_PATH     = os.getenv(
+    "EVAL_OUTPUT_FILE",
+    os.path.join(SCRIPT_DIR, "eval_results.xlsx")
+)
+SHEET_NAME      = os.getenv("QUESTIONS_SHEET", None)
+QUESTION_COLUMN = os.getenv("QUESTION_COLUMN", None)
 
 async def _evaluate_batch(df: pd.DataFrame):
     """
@@ -49,18 +55,43 @@ async def _evaluate_batch(df: pd.DataFrame):
 
 def main():
     # 1) Load questions from Excel or CSV
+    if not os.path.exists(INPUT_PATH):
+        raise FileNotFoundError(f"Questions file not found: {INPUT_PATH}")
+
+    # Read file
     if INPUT_PATH.lower().endswith(".xlsx"):
         df = pd.read_excel(INPUT_PATH, sheet_name=SHEET_NAME)
     else:
         df = pd.read_csv(INPUT_PATH)
 
-    if "Question" not in df.columns:
-        raise ValueError("Input file must have a 'Question' column")
+    # Ensure df is a DataFrame
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
 
-    # 2) Run the async evaluation batch
+    # 2) Determine which column holds questions
+    cols = list(df.columns)
+    if QUESTION_COLUMN and QUESTION_COLUMN in cols:
+        qcol = QUESTION_COLUMN
+    elif "Question" in cols:
+        qcol = "Question"
+    elif "question" in cols:
+        qcol = "question"
+    elif len(cols) == 1:
+        qcol = cols[0]
+    else:
+        raise ValueError(
+            "Could not find question column. Set QUESTION_COLUMN or include 'Question' or 'question'. "
+            f"Available columns: {cols}"
+        )
+
+    # Normalize to 'Question'
+    if qcol != "Question":
+        df = df.rename(columns={qcol: "Question"})
+
+    # 3) Run the async evaluation batch
     df_out = asyncio.run(_evaluate_batch(df))
 
-    # 3) Write full results out to Excel or CSV
+    # 4) Write results out to Excel or CSV
     if OUTPUT_PATH.lower().endswith(".xlsx"):
         with pd.ExcelWriter(OUTPUT_PATH, engine="openpyxl") as writer:
             df_out.to_excel(writer, index=False, sheet_name="EvalResults")
