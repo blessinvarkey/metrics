@@ -4,13 +4,15 @@ import os
 import asyncio
 import pandas as pd
 
-from api.queries import main as handle_query
-from api.models import UserQuestionRequest
+# Import the same entry-point your API uses
+from api.queries import main as handle_query, fetch_context
+from models.entities import UserQuestionRequest
 
-# Paths & sheet names (override via env if desired)
-INPUT_PATH  = os.getenv("QUESTIONS_FILE",  "data/questions.xlsx")
-OUTPUT_PATH = os.getenv("EVAL_OUTPUT_FILE", "data/eval_results.xlsx")
-SHEET_NAME  = os.getenv("QUESTIONS_SHEET",  "Sheet1")
+# File paths (override via env)
+# questions.xlsx placed in the same services folder as this script
+INPUT_PATH  = os.getenv("QUESTIONS_FILE", "questions.xlsx")
+OUTPUT_PATH = os.getenv("EVAL_OUTPUT_FILE", "eval_results.xlsx")
+SHEET_NAME  = os.getenv("QUESTIONS_SHEET", None)
 
 async def _evaluate_batch(df: pd.DataFrame):
     """
@@ -18,16 +20,23 @@ async def _evaluate_batch(df: pd.DataFrame):
     """
     results = []
 
-    # A minimal auth dict that passes your Authorization() dependency
+    # Minimal auth dict to satisfy Depends(Authorisation())
     dummy_auth = {"sub": "eval_user", "roles": ["evaluator"]}
 
     for question in df["Question"]:
-        # Wrap the question in the same request object your endpoint expects
-        req = UserQuestionRequest(user_question=question)
-        # Call your live pipeline handler
+        # 1) Fetch context for each question
+        user_context = await fetch_context(question)
+
+        # 2) Build the request including required context
+        req = UserQuestionRequest(
+            user_question=question,
+            user_context=user_context
+        )
+
+        # 3) Call the live pipeline handler
         resp = await handle_query(req, auth=dummy_auth)
-        # resp is likely a Pydantic model or dict containing:
-        # { initial_sql, refined_sql, final_rows, confidence_score, status, timestamps, ... }
+
+        # 4) Convert response to dict and include the question
         record = resp.dict() if hasattr(resp, "dict") else dict(resp)
         record["Question"] = question
         results.append(record)
@@ -48,7 +57,7 @@ def main():
     # 2) Run the async evaluation batch
     df_out = asyncio.run(_evaluate_batch(df))
 
-    # 3) Write full results out
+    # 3) Write full results out to Excel or CSV
     if OUTPUT_PATH.lower().endswith(".xlsx"):
         with pd.ExcelWriter(OUTPUT_PATH, engine="openpyxl") as writer:
             df_out.to_excel(writer, index=False, sheet_name="EvalResults")
