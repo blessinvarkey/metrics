@@ -15,18 +15,15 @@ from phoenix.evals import (
     SQL_GEN_EVAL_PROMPT_RAILS_MAP,
     QA_PROMPT_TEMPLATE,
     QA_PROMPT_RAILS_MAP,
-    OpenAIModel,
     LiteLLMModel,
     llm_classify
 )
 
 # === Hard-coded evaluation cases ===
-# Toggle via USE_HARDCODE_EXAMPLES=true
 USE_HARDCODE = os.getenv("USE_HARDCODE_EXAMPLES", "false").lower() == "true"
-
 TEST_EVAL_CASES = [
     {
-        "Question": "How many users signed up last month?",
+        "Question": "How many users signed up last month?",  
         "UserContext": None,
         "GroundTruthSQL": (
             "SELECT COUNT(*) FROM users "
@@ -35,7 +32,7 @@ TEST_EVAL_CASES = [
         "GroundTruthResponse": [{"count": 1234}],
     },
     {
-        "Question": "How many lapsed policies came from penn?",
+        "Question": "How many lapsed policies came from penn?",  
         "UserContext": None,
         "GroundTruthSQL": (
             "SELECT COUNT(*) FROM policies "
@@ -56,12 +53,9 @@ async def run_pipeline(df: pd.DataFrame) -> pd.DataFrame:
     records = []
     for _, row in df.iterrows():
         q = row["Question"]
-        # fetch optional context
         ctx = await fetch_context(q)
         user_ctx = str(ctx) if ctx is not None else None
-        # build request
         req = UserQuestionRequest(user_question=q, user_context=user_ctx)
-        # execute full pipeline
         resp = await handle_query(req, auth=dummy_auth)
         out = resp.dict() if hasattr(resp, "dict") else dict(resp)
         records.append({
@@ -69,16 +63,14 @@ async def run_pipeline(df: pd.DataFrame) -> pd.DataFrame:
             "UserContext": user_ctx,
             "GeneratedSQL": out.get("final_sql") or out.get("sql_query"),
             "GeneratedResponse": out.get("query_execution_response") or out.get("rows"),
-            # include ground-truth for later eval
             "GroundTruthSQL": row.get("GroundTruthSQL"),
             "GroundTruthResponse": row.get("GroundTruthResponse"),
         })
     return pd.DataFrame(records)
 
-# execute pipeline
 pred_df = asyncio.run(run_pipeline(eval_df))
 
-# === Step 2: Evaluate with Arize Phoenix ===
+# === Step 2: Evaluate with Arize Phoenix (Ollama only) ===
 # Prepare DataFrames for SQL correctness eval
 sql_df = pred_df[["Question", "GeneratedSQL", "GroundTruthSQL"]].rename(
     columns={"Question": "instruction", "GeneratedSQL": "predicted_sql", "GroundTruthSQL": "ground_truth_sql"}
@@ -88,33 +80,13 @@ resp_df = pred_df[["Question", "GeneratedResponse", "GroundTruthResponse"]].rena
     columns={"Question": "instruction", "GeneratedResponse": "predicted_response", "GroundTruthResponse": "ground_truth_response"}
 )
 
-# Instantiate Azure and Ollama models
-azure_model = OpenAIModel(
-    model_name=os.getenv("AZURE_OPENAI_CHAT_MODEL"),
-    temperature=float(os.getenv("TEMPERATURE", "0")),
-    openai_api_type="azure",
-    openai_api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    openai_api_key=os.getenv("AZURE_OPENAI_KEY"),
-    openai_api_version=os.getenv("AZURE_OPENAI_VERSION"),
-),
-    temperature=float(os.getenv("TEMPERATURE", "0")),
-    api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
-    api_type="azure",
-    api_version=os.getenv("AZURE_OPENAI_VERSION"),
-)
+# Instantiate Ollama model only
 ollama_model = LiteLLMModel(model=os.getenv("OLLAMA_MODEL", "ollama/llama3.2-vision:11b"))
+
 rails_sql = list(SQL_GEN_EVAL_PROMPT_RAILS_MAP.values())
 rails_qa = list(QA_PROMPT_RAILS_MAP.values())
 
-# SQL evaluation
-sql_res_azure = llm_classify(
-    dataframe=sql_df,
-    template=SQL_GEN_EVAL_PROMPT_TEMPLATE,
-    model=azure_model,
-    rails=rails_sql,
-    provide_explanation=True,
-)
+# SQL evaluation (Ollama only)
 sql_res_ollama = llm_classify(
     dataframe=sql_df,
     template=SQL_GEN_EVAL_PROMPT_TEMPLATE,
@@ -122,14 +94,7 @@ sql_res_ollama = llm_classify(
     rails=rails_sql,
     provide_explanation=True,
 )
-# Response evaluation
-resp_res_azure = llm_classify(
-    dataframe=resp_df,
-    template=QA_PROMPT_TEMPLATE,
-    model=azure_model,
-    rails=rails_qa,
-    provide_explanation=True,
-)
+# Response evaluation (Ollama only)
 resp_res_ollama = llm_classify(
     dataframe=resp_df,
     template=QA_PROMPT_TEMPLATE,
@@ -140,25 +105,18 @@ resp_res_ollama = llm_classify(
 
 # Merge labels back into pred_df
 result_df = pred_df.copy()
-result_df["label_sql_azure"] = sql_res_azure["label"]
-result_df["explanation_sql_azure"] = sql_res_azure["explanation"]
 result_df["label_sql_ollama"] = sql_res_ollama["label"]
 result_df["explanation_sql_ollama"] = sql_res_ollama["explanation"]
-result_df["label_resp_azure"] = resp_res_azure["label"]
-result_df["explanation_resp_azure"] = resp_res_azure["explanation"]
 result_df["label_resp_ollama"] = resp_res_ollama["label"]
 result_df["explanation_resp_ollama"] = resp_res_ollama["explanation"]
 
 # === Step 3: Output ===
-# Terminal output
-print("\n===== Detailed Evaluation Results =====")
+print("\n===== Detailed Evaluation Results (Ollama only) =====")
 print(result_df.to_string(index=False))
 
-# Aggregate metrics
+# Aggregate metrics (Ollama only)
 metrics = {}
-metrics['Azure SQL'] = sql_res_azure.metrics()
 metrics['Ollama SQL'] = sql_res_ollama.metrics()
-metrics['Azure Resp'] = resp_res_azure.metrics()
 metrics['Ollama Resp'] = resp_res_ollama.metrics()
 print("\n===== Aggregate Metrics =====")
 for key, met in metrics.items():
@@ -167,10 +125,9 @@ for key, met in metrics.items():
     print()
 
 # Excel export
-out_path = os.path.join(os.path.dirname(__file__), "eval_results.xlsx")
+out_path = os.path.join(os.path.dirname(__file__), "eval_results_ollama.xlsx")
 with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
     result_df.to_excel(writer, sheet_name="Detailed", index=False)
-    # summary
     sum_rows = []
     for key, met in metrics.items():
         for k, v in met.items():
