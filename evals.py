@@ -92,6 +92,12 @@ resp_df = pred_df[["Question", "GeneratedResponse", "GroundTruthResponse"]].rena
 azure_model = OpenAIModel(
     model_name=os.getenv("AZURE_OPENAI_CHAT_MODEL"),
     temperature=float(os.getenv("TEMPERATURE", "0")),
+    openai_api_type="azure",
+    openai_api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    openai_api_key=os.getenv("AZURE_OPENAI_KEY"),
+    openai_api_version=os.getenv("AZURE_OPENAI_VERSION"),
+),
+    temperature=float(os.getenv("TEMPERATURE", "0")),
     api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
     api_key=os.getenv("AZURE_OPENAI_KEY"),
     api_type="azure",
@@ -174,3 +180,4 @@ with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
     )
 
 print(f"\nExcel report saved to: {out_path}\n")
+```
