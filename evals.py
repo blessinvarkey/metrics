@@ -17,7 +17,9 @@ from phoenix.evals import (
     LiteLLMModel,
     llm_classify
 )
-from phoenix.pandas import Profiler
+from phoenix.utils.data_schema import DataSchema
+from phoenix.evals import PhoenixEvalConfig, MultipleChoiceEval
+import utilities.constants as constants
 
 # === Configuration ===
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -89,8 +91,8 @@ classify_df = pred_df[["Question", "GeneratedSQL", "GroundTruthSQL"]].rename(
     }
 )
 
-# Build Phoenix eval
-eval_model_azure = OpenAIModel(
+# Build Phoenix eval models
+azure_model = OpenAIModel(
     model_name=os.getenv("AZURE_OPENAI_CHAT_MODEL"),
     temperature=float(os.getenv("TEMPERATURE", 0)),
     api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -98,32 +100,28 @@ eval_model_azure = OpenAIModel(
     api_type="azure",
     api_version=os.getenv("AZURE_OPENAI_VERSION")
 )
-# Optional Ollama model
-eval_model_ollama = LiteLLMModel(model=os.getenv("OLLAMA_MODEL", "ollama/llama3.2-vision:11b"))
-
-from phoenix.utils.data_schema import DataSchema
-from phoenix.evals import PhoenixEvalConfig, MultipleChoiceEval
+ollama_model = LiteLLMModel(model=os.getenv("OLLAMA_MODEL", "ollama/llama3.2-vision:11b"))
 
 schema = DataSchema(
     prediction_id_column_name="prediction_id",
     prediction_label_column_name="predicted_sql",
-    actual_label_column_name="ground_truth_sql",
+    actual_label_column_name="ground_truth_sql"
 )
 eval_config = PhoenixEvalConfig()
 evaluator_azure = MultipleChoiceEval(
-    llm_model=eval_model_azure,
+    llm_model=azure_model,
     data_schema=schema,
     config=eval_config
 )
 evaluator_ollama = MultipleChoiceEval(
-    llm_model=eval_model_ollama,
+    llm_model=ollama_model,
     data_schema=schema,
     config=eval_config
 )
 
 # Run evaluations
-results_azure = evaluator_azure.run(pred_df)
-results_ollama = evaluator_ollama.run(pred_df)
+results_azure = evaluator_azure.run(classify_df)
+results_ollama = evaluator_ollama.run(classify_df)
 metrics_azure = results_azure.metrics()
 metrics_ollama = results_ollama.metrics()
 metrics_df_azure = results_azure.metrics_df
