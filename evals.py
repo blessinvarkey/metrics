@@ -3,67 +3,167 @@
 import os
 import asyncio
 import pandas as pd
+from dotenv import load_dotenv
 
-# Import the full pipeline entry-point and context fetcher
+# Load environment variables from .env
+load_dotenv()
+
 from api.queries import main as handle_query, fetch_context
 from models.entities import UserQuestionRequest
+from phoenix.evals import (
+    SQL_GEN_EVAL_PROMPT_TEMPLATE,
+    SQL_GEN_EVAL_PROMPT_RAILS_MAP,
+    OpenAIModel,
+    LiteLLMModel,
+    llm_classify
+)
+from phoenix.pandas import Profiler
 
-# Hard-coded question for initial testing
-def get_test_questions():
-    # Replace this list with your own test cases as needed
-    return [
-        "Show me total sales by region for the last quarter."
-    ]
+# === Configuration ===
+SCRIPT_DIR = os.path.dirname(__file__)
+# Path to dataset with ground truth
+DATASET_PATH = os.getenv(
+    "EVAL_DATASET_FILE",
+    os.path.join(SCRIPT_DIR, "eval_dataset.xlsx")
+)
+# Flag to use hard-coded examples instead of loading file
+USE_HARDCODE = os.getenv("USE_HARDCODE_EXAMPLES", "false").lower() == "true"
 
-async def _evaluate_batch(questions):
-    """
-    Call the full production pipeline (api.queries.main) for each question.
-    """
-    results = []
+# === Hard-coded examples (for quick testing) ===
+HARD_CODED_DATA = [
+    {
+        "Question": "How many users signed up last month?",
+        "GroundTruthSQL": "SELECT COUNT(*) FROM users WHERE signup_date BETWEEN '2025-05-01' AND '2025-05-31';",
+        "GroundTruthResponse": [{"count": 1234}]
+    },
+    # Add more examples as needed
+]
 
-    # Minimal auth dict to satisfy Depends(Authorisation())
+# === Load evaluation data ===
+if USE_HARDCODE:
+    df = pd.DataFrame(HARD_CODED_DATA)
+else:
+    if DATASET_PATH.lower().endswith(".xlsx"):
+        df = pd.read_excel(DATASET_PATH)
+    else:
+        df = pd.read_csv(DATASET_PATH)
+
+    required_cols = {"Question", "GroundTruthSQL", "GroundTruthResponse"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Dataset must contain columns: {required_cols}")
+
+# === 1) Run pipeline to generate predictions ===
+async def generate_predictions(dataf: pd.DataFrame) -> pd.DataFrame:
     dummy_auth = {"sub": "eval_user", "roles": ["evaluator"]}
-
-    for question in questions:
-        # 1) Fetch context for each question
-        ctx = await fetch_context(question)
-        # Ensure user_context is a string
+    recs = []
+    for _, row in dataf.iterrows():
+        q = row["Question"]
+        # fetch context
+        ctx = await fetch_context(q)
         user_context = str(ctx)
-
-        # 2) Build the request including required context
-        req = UserQuestionRequest(
-            user_question=question,
-            user_context=user_context
-        )
-
-        # 3) Call the live pipeline handler
+        # build request and call pipeline
+        req = UserQuestionRequest(user_question=q, user_context=user_context)
         resp = await handle_query(req, auth=dummy_auth)
+        d = resp.dict() if hasattr(resp, "dict") else dict(resp)
+        generated_sql = d.get("final_sql") or d.get("sql_query")
+        generated_response = d.get("query_execution_response") or d.get("rows")
+        rec = {
+            "Question": q,
+            "GroundTruthSQL": row.get("GroundTruthSQL"),
+            "GroundTruthResponse": row.get("GroundTruthResponse"),
+            "GeneratedSQL": generated_sql,
+            "GeneratedResponse": generated_response
+        }
+        recs.append(rec)
+    return pd.DataFrame(recs)
 
-        # 4) Convert response to dict and include the question
-        record = resp.dict() if hasattr(resp, "dict") else dict(resp)
-        record["Question"] = question
-        results.append(record)
+pred_df = asyncio.run(generate_predictions(df))
 
-    # Return as DataFrame for writing or printing
-    return pd.DataFrame(results)
+# === 2) Evaluate SQL correctness vs GroundTruthSQL ===
+# Prepare DataFrame for classification
+classify_df = pred_df[["Question", "GeneratedSQL", "GroundTruthSQL"]].rename(
+    columns={
+        "Question": "prediction_id",
+        "GeneratedSQL": "predicted_sql",
+        "GroundTruthSQL": "ground_truth_sql"
+    }
+)
 
+# Build Phoenix eval
+eval_model_azure = OpenAIModel(
+    model_name=os.getenv("AZURE_OPENAI_CHAT_MODEL"),
+    temperature=float(os.getenv("TEMPERATURE", 0)),
+    api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.getenv("AZURE_OPENAI_KEY"),
+    api_type="azure",
+    api_version=os.getenv("AZURE_OPENAI_VERSION")
+)
+# Optional Ollama model
+eval_model_ollama = LiteLLMModel(model=os.getenv("OLLAMA_MODEL", "ollama/llama3.2-vision:11b"))
 
-def main():
-    # Use hard-coded test questions rather than reading from a file
-    questions = get_test_questions()
+from phoenix.utils.data_schema import DataSchema
+from phoenix.evals import PhoenixEvalConfig, MultipleChoiceEval
 
-    # Run the async evaluation batch
-    df_out = asyncio.run(_evaluate_batch(questions))
+schema = DataSchema(
+    prediction_id_column_name="prediction_id",
+    prediction_label_column_name="predicted_sql",
+    actual_label_column_name="ground_truth_sql",
+)
+eval_config = PhoenixEvalConfig()
+evaluator_azure = MultipleChoiceEval(
+    llm_model=eval_model_azure,
+    data_schema=schema,
+    config=eval_config
+)
+evaluator_ollama = MultipleChoiceEval(
+    llm_model=eval_model_ollama,
+    data_schema=schema,
+    config=eval_config
+)
 
-    # Write results out to console and to a CSV for now
-    print("===== Evaluation Results =====")
-    print(df_out.to_string(index=False))
+# Run evaluations
+results_azure = evaluator_azure.run(pred_df)
+results_ollama = evaluator_ollama.run(pred_df)
+metrics_azure = results_azure.metrics()
+metrics_ollama = results_ollama.metrics()
+metrics_df_azure = results_azure.metrics_df
+metrics_df_ollama = results_ollama.metrics_df
 
-    # Save to CSV in the working directory
-    output_file = os.getenv("EVAL_OUTPUT_FILE", "eval_results.csv")
-    df_out.to_csv(output_file, index=False)
-    print(f"✅ Wrote {len(df_out)} evaluation records to {output_file}")
+# Merge back labels & explanations
+eval_df = pred_df.copy()
+eval_df["label_azure"] = metrics_df_azure["label"]
+eval_df["explanation_azure"] = metrics_df_azure["explanation"]
+eval_df["label_ollama"] = metrics_df_ollama["label"]
+eval_df["explanation_ollama"] = metrics_df_ollama["explanation"]
 
+# === 3) Output ===
+# 3a) Terminal
+print("\n===== Detailed Evaluation Results =====")
+print(eval_df.to_string(index=False))
+
+print("\n===== Aggregate Metrics =====")
+print("-- Azure OpenAI --")
+for k, v in metrics_azure.items(): print(f"{k:30s}: {v}")
+print("\n-- Ollama --")
+for k, v in metrics_ollama.items(): print(f"{k:30s}: {v}")
+
+# 3b) Excel export
+out_path = os.path.join(SCRIPT_DIR, "eval_results.xlsx")
+with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+    eval_df.to_excel(writer, sheet_name="Detailed", index=False)
+    summary = [
+        ("Metric (Azure)", "Value"),
+        *metrics_azure.items(),
+        ("", ""),
+        ("Metric (Ollama)", "Value"),
+        *metrics_ollama.items()
+    ]
+    pd.DataFrame(summary, columns=["Metric", "Value"]).to_excel(
+        writer, sheet_name="Summary", index=False
+    )
+
+print(f"\nExcel report saved to: {out_path}\n")
 
 if __name__ == "__main__":
-    main()
+    pass
+```
