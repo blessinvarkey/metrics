@@ -17,7 +17,12 @@ from phoenix.evals import (
     LiteLLMModel,
     llm_classify
 )
-from phoenix.utils.data_schema import DataSchema
+# Inline DataSchema definition (avoids missing phoenix.utils)
+class DataSchema:
+    def __init__(self, prediction_id_column_name: str, prediction_label_column_name: str, actual_label_column_name: str):
+        self.prediction_id_column_name = prediction_id_column_name
+        self.prediction_label_column_name = prediction_label_column_name
+        self.actual_label_column_name = actual_label_column_name
 from phoenix.evals import PhoenixEvalConfig, MultipleChoiceEval
 import utilities.constants as constants
 
